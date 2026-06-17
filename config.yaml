@@ -1,0 +1,20 @@
+source_dir: "./temp_inbox"
+archive_dir: "./archive"
+state_dir: "./state"
+log_dir: "./logs"
+
+supplier_pattern: "^([A-Z]{2,5}\\d{3,6})[_-]"
+batch_size: 50
+
+enabled_extensions:
+  - .pdf
+  - .jpg
+  - .jpeg
+  - .png
+  - .xlsx
+  - .docx
+  - .ofd
+
+disabled_extensions: []
+
+conflict_policy: "rename"
