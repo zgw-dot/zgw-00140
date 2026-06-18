@@ -10,12 +10,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
+from .state import (
+    HandoffStateManager,
+    HANDOFF_SEALER_DIR,
+    HANDOFF_SEALER_STATE_FILE,
+    HANDOFF_SEALER_AUDIT_LOG,
+    HANDOFF_SEALER_HISTORY_FILE,
+    HandoffImportItem,
+    HandoffImportConflict,
+)
 
-SEALER_DIR = ".handoff_sealer"
-SEALER_STATE_FILE = "sealer_state.json"
-SEALER_AUDIT_LOG = "sealer_audit.jsonl"
-SEALER_HISTORY_FILE = "sealer_history.json"
-SEALER_IMPORT_PROGRESS = "import_progress.json"
+
+SEALER_DIR = HANDOFF_SEALER_DIR
+SEALER_STATE_FILE = HANDOFF_SEALER_STATE_FILE
+SEALER_AUDIT_LOG = HANDOFF_SEALER_AUDIT_LOG
+SEALER_HISTORY_FILE = HANDOFF_SEALER_HISTORY_FILE
 
 DIR_KINDS = ("temp_inbox", "archive", "state", "logs")
 STATE_FILES = ("batches.json", "failure_queue.json")
@@ -368,33 +377,27 @@ class HandoffSealer:
         self.runtime_root = os.path.abspath(runtime_root)
         self.sealer_dir = os.path.join(self.runtime_root, SEALER_DIR)
         self.state_path = os.path.join(self.sealer_dir, SEALER_STATE_FILE)
-        self.progress_path = os.path.join(self.sealer_dir, SEALER_IMPORT_PROGRESS)
         os.makedirs(self.sealer_dir, exist_ok=True)
+        self._state_mgr = HandoffStateManager(runtime_root)
         self._audit = AuditLogger(self.sealer_dir)
         self._history = HistoryManager(self.sealer_dir)
 
-    def _get_state(self) -> Optional[SealerState]:
-        data = _safe_read_json(self.state_path)
-        if data is None:
-            return None
-        return SealerState(**data)
+    def _get_state(self):
+        return self._state_mgr.load()
 
-    def _save_state(self, state: SealerState) -> None:
-        state.updated_at = _now()
-        if not state.created_at:
-            state.created_at = _now()
-        _write_json_atomic(state.to_dict(), self.state_path)
+    def _save_state(self, state) -> None:
+        self._state_mgr.save(state)
 
     def _new_state(self, pack_id: str = None, action: str = None,
-                   target_runtime_root: str = None, phase: str = "init") -> SealerState:
-        state = SealerState(
-            current_pack_id=pack_id,
-            current_action=action,
+                   target_runtime_root: str = None, phase: str = "init",
+                   pack_path: str = None):
+        return self._state_mgr.new_state(
+            pack_id=pack_id,
+            action=action,
             target_runtime_root=target_runtime_root,
             phase=phase,
+            pack_path=pack_path,
         )
-        self._save_state(state)
-        return state
 
     def pack(self, output_path: str = None, notes: str = "",
              include_samples: bool = True) -> Dict:
@@ -497,6 +500,8 @@ class HandoffSealer:
         if output_path is None:
             output_path = os.path.join(tempfile.gettempdir(), f"{pack_id}.zip")
         output_path = os.path.abspath(output_path)
+        state.pack_path = output_path
+        self._save_state(state)
 
         try:
             self._create_pack_zip(output_path, manifest, items, checksums,
@@ -865,11 +870,13 @@ class HandoffSealer:
         state = self._get_state() or self._new_state()
         state.current_pack_id = manifest.pack_id
         state.current_action = "import"
+        state.pack_path = pack_path
         state.target_runtime_root = target_runtime_root
         state.phase = "prechecked"
         state.import_dry_run = dry_run
         state.import_items = [i.to_dict() for i in import_items]
         state.import_conflicts = [c.to_dict() for c in conflicts]
+        state.completed_paths = []
         self._save_state(state)
 
         self._audit.log("precheck_import",
@@ -902,32 +909,40 @@ class HandoffSealer:
             "dry_run": dry_run,
         }
 
-    def do_import(self, pack_path: str, target_runtime_root: str = None,
+    def do_import(self, pack_path: str = None, target_runtime_root: str = None,
                   dry_run: bool = False, resume: bool = False,
                   conflict_policy: str = "skip") -> Dict:
+        state = self._get_state()
+
+        if pack_path is None:
+            if state and state.pack_path:
+                pack_path = state.pack_path
+            else:
+                return {"status": "error", "error": "未指定交接包路径，且状态中无记录"}
+
         pack_path = os.path.abspath(pack_path)
 
         if target_runtime_root is None:
-            state = self._get_state()
             if state and state.target_runtime_root:
                 target_runtime_root = state.target_runtime_root
             else:
                 target_runtime_root = self.runtime_root
         target_runtime_root = os.path.abspath(target_runtime_root)
 
-        pre = None
         if not resume:
             pre = self.precheck_import(pack_path, target_runtime_root, dry_run)
             if pre["status"] == "error":
                 return pre
+            state = self._get_state()
         else:
-            progress = _safe_read_json(self.progress_path)
-            if progress is None:
+            if state is None or len(state.completed_paths) == 0:
                 return {"status": "error", "error": "未找到续跑进度，请先执行导入再使用--resume"}
 
-        state = self._get_state()
         if state is None:
             return {"status": "error", "error": "状态丢失"}
+
+        state.phase = "importing"
+        self._save_state(state)
 
         with zipfile.ZipFile(pack_path, "r") as zf:
             manifest = PackManifest(**json.loads(zf.read(PACK_MANIFEST).decode("utf-8")))
@@ -943,11 +958,7 @@ class HandoffSealer:
             written_items: List[Tuple[str, str]] = []
 
             items_to_process = state.import_items[:]
-            if resume:
-                progress_data = _safe_read_json(self.progress_path) or {}
-                completed_paths = set(progress_data.get("completed_paths", []))
-            else:
-                completed_paths = set()
+            completed_paths = set(state.completed_paths)
 
             for imp_item_dict in items_to_process:
                 imp_item = ImportItem(**imp_item_dict)
@@ -1017,13 +1028,8 @@ class HandoffSealer:
                     written_items.append((rel, tgt_path))
                     completed_paths.add(rel)
 
-                    if not resume:
-                        _write_json_atomic({
-                            "pack_id": manifest.pack_id,
-                            "target_runtime_root": target_runtime_root,
-                            "completed_paths": sorted(completed_paths),
-                            "last_updated": _now(),
-                        }, self.progress_path)
+                    state.completed_paths = sorted(completed_paths)
+                    self._save_state(state)
 
                 except PermissionError as e:
                     imp_item.status = "permission_denied"
@@ -1046,12 +1052,6 @@ class HandoffSealer:
             state.undo_available = len(written_items) > 0 and not dry_run
             state.phase = "imported" if not dry_run else "dry_run_completed"
             self._save_state(state)
-
-            if os.path.isfile(self.progress_path):
-                try:
-                    os.remove(self.progress_path)
-                except OSError:
-                    pass
 
         success = len(failed_items) == 0 and not dry_run
 
@@ -1266,6 +1266,7 @@ class HandoffSealer:
             "phase": state.phase,
             "current_pack_id": state.current_pack_id,
             "current_action": state.current_action,
+            "pack_path": state.pack_path,
             "target_runtime_root": state.target_runtime_root,
             "import_dry_run": state.import_dry_run,
             "undo_available": state.undo_available,
@@ -1275,23 +1276,13 @@ class HandoffSealer:
             "import_status_counts": import_counts,
             "conflict_count": len(state.import_conflicts),
             "sealer_dir": self.sealer_dir,
-            "resume_available": os.path.isfile(self.progress_path),
+            "resume_available": len(state.completed_paths) > 0 and state.phase in ("importing", "prechecked"),
+            "completed_count": len(state.completed_paths),
         }
 
-    def cleanup(self) -> Dict:
-        cleaned = []
-        for fname in os.listdir(self.sealer_dir) if os.path.isdir(self.sealer_dir) else []:
-            fpath = os.path.join(self.sealer_dir, fname)
-            try:
-                if os.path.isfile(fpath):
-                    os.remove(fpath)
-                    cleaned.append(fname)
-            except OSError:
-                pass
-        try:
-            if os.path.isdir(self.sealer_dir) and not os.listdir(self.sealer_dir):
-                os.rmdir(self.sealer_dir)
-                cleaned.append(SEALER_DIR + "(空目录已删除)")
-        except OSError:
-            pass
-        return {"status": "cleaned", "cleaned": cleaned}
+    def cleanup(self, wipe_pack: bool = False) -> Dict:
+        if wipe_pack:
+            cleaned = self._state_mgr.wipe()
+        else:
+            cleaned = self._state_mgr.cleanup_all()
+        return {"status": "cleaned", "cleaned": cleaned, "wipe_pack": wipe_pack}

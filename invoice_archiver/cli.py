@@ -202,7 +202,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_hs_history.add_argument("--limit", type=int, default=100, help="最多显示记录数（默认100）")
 
     sub.add_parser("handoff-status", help="交接封箱包: 查看当前操作状态")
-    sub.add_parser("handoff-cleanup", help="交接封箱包: 清理sealer状态文件和审计日志")
+    p_hs_cleanup = sub.add_parser("handoff-cleanup", help="交接封箱包: 清理sealer状态文件和审计日志")
+    p_hs_cleanup.add_argument("--wipe", action="store_true", help="同时删除交接包zip文件")
 
     return parser
 
@@ -797,9 +798,9 @@ def _cmd_handoff_status(source_root: str) -> int:
     return 0
 
 
-def _cmd_handoff_cleanup(source_root: str) -> int:
+def _cmd_handoff_cleanup(args: argparse.Namespace, source_root: str) -> int:
     sealer = HandoffSealer(runtime_root=source_root)
-    result = sealer.cleanup()
+    result = sealer.cleanup(wipe_pack=args.wipe)
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
@@ -908,7 +909,7 @@ def main():
         elif args.command == "handoff-status":
             sys.exit(_cmd_handoff_status(source_root))
         elif args.command == "handoff-cleanup":
-            sys.exit(_cmd_handoff_cleanup(source_root))
+            sys.exit(_cmd_handoff_cleanup(args, source_root))
 
     if args.command in _WIZARD_COMMANDS:
         if args.command == "wizard-scan":

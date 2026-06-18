@@ -521,16 +521,16 @@ def test_scenario_6_cross_restart_resume():
     pre_result = sealer_tgt.precheck_import(pack_path=pack_output, target_runtime_root=tgt_rt["root"])
     assert pre_result["status"] == "prechecked"
 
-    progress_path = os.path.join(tgt_rt["root"], ".handoff_sealer", "import_progress.json")
-
     first_half = pre_result["import_items"][:len(pre_result["import_items"])//2]
     completed_paths = [i["relative_path"] for i in first_half]
-    import json as j
-    os.makedirs(os.path.dirname(progress_path), exist_ok=True)
-    with open(progress_path, "w", encoding="utf-8") as f:
-        j.dump({"pack_id": pack_id, "target_runtime_root": tgt_rt["root"],
-                "completed_paths": completed_paths, "last_updated": "2026-06-18T00:00:00"}, f)
-    print(f"模拟中断: 手动写入进度文件，已完成{len(completed_paths)}项")
+
+    from invoice_archiver.state import HandoffStateManager
+    state_mgr = HandoffStateManager(tgt_rt["root"])
+    state = state_mgr.load()
+    state.completed_paths = completed_paths
+    state_mgr.save(state)
+
+    print(f"模拟中断: 直接写入状态文件completed_paths，已完成{len(completed_paths)}项")
 
     def _resume_import():
         sealer = HandoffSealer(runtime_root=tgt_rt["root"])
@@ -623,13 +623,11 @@ def test_scenario_7_git_cleanliness():
     assert clean_committed, "commit后应干净"
     print("OK 交接包+sealer状态被git tracked后，工作区干净")
 
-    os.remove(pack_in_repo)
-
     def _cleanup_sealer():
         sealer = HandoffSealer(runtime_root=test_repo_dir)
-        return sealer.cleanup()
+        return sealer.cleanup(wipe_pack=True)
 
-    result_c = step("7b. handoff-cleanup 清理仓库内的sealer状态", _cleanup_sealer)
+    result_c = step("7b. handoff-cleanup --wipe 清理仓库内的sealer状态和交接包", _cleanup_sealer)
     print(f"清理结果: {result_c}")
 
     sealer_path = os.path.join(test_repo_dir, ".handoff_sealer")
@@ -637,7 +635,7 @@ def test_scenario_7_git_cleanliness():
     sealer_exists_after = os.path.isdir(sealer_path) or os.path.isfile(sealer_path)
     assert not pack_exists_after, "交接包文件应已被删除"
     assert not sealer_exists_after, "sealer目录及其所有内容应已被清理干净，无任何遗留"
-    print("OK cleanup清理彻底：交接包和sealer目录下所有文件均已删除，文件系统层面无遗留")
+    print("OK cleanup(wipe_pack=True)清理彻底：交接包和sealer目录下所有文件均已删除，文件系统层面无遗留")
 
     untracked_listing = subprocess.run(
         ["git", "-C", test_repo_dir, "ls-files", "--others", "--exclude-standard"],
