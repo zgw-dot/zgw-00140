@@ -8,6 +8,7 @@ from .config import load_config, init_sample_config, ArchiveConfig
 from .archiver import Archiver
 from . import migration as mig
 from .relocation_wizard import RelocationWizard
+from .takeover_ledger import TakeoverLedger
 
 
 _COMMANDS_THAT_ALLOW_LEGACY = {"init", "migrate", "detect-legacy"}
@@ -94,6 +95,40 @@ def _build_parser() -> argparse.ArgumentParser:
     p_wiz_audit.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
     p_wiz_audit.add_argument("--output", default=None, help="输出文件路径")
     p_wiz_audit.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
+    p_tk_scan = sub.add_parser("takeover-scan", help="接管台账: 扫描运行目录产物，生成接管清单")
+    p_tk_scan.add_argument("--target", required=True, help="接管目标运行目录")
+    p_tk_scan.add_argument("--config", dest="tk_config", default=None, help="配置文件路径 (用于记录原始路径)")
+    p_tk_scan.add_argument("--conflict-policy", choices=["skip", "overwrite", "rename"], default="rename",
+                           help="冲突处理策略 (默认: rename)")
+    p_tk_scan.add_argument("--duplicate-policy", choices=["skip", "merge", "overwrite", "ask"], default="merge",
+                           help="重复导出记录处理策略 (默认: merge)")
+
+    sub.add_parser("takeover-confirm", help="接管台账: 确认接管清单")
+    sub.add_parser("takeover-apply", help="接管台账: 执行接管 (切换到新运行目录)")
+
+    p_tk_resume = sub.add_parser("takeover-resume", help="接管台账: 续跑上次未完成的接管")
+    p_tk_resume.add_argument("--resume", action="store_true", help="续跑上次未完成的接管")
+
+    sub.add_parser("takeover-undo", help="接管台账: 一键撤销接管 (恢复原始路径)")
+    sub.add_parser("takeover-status", help="接管台账: 查看接管状态和台账详情")
+
+    p_tk_export = sub.add_parser("takeover-export", help="接管台账: 导出台账 (JSON/CSV)")
+    p_tk_export.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
+    p_tk_export.add_argument("--output", default=None, help="输出文件路径")
+    p_tk_export.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
+    p_tk_audit = sub.add_parser("takeover-audit", help="接管台账: 导出审计日志 (JSON/CSV)")
+    p_tk_audit.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
+    p_tk_audit.add_argument("--output", default=None, help="输出文件路径")
+    p_tk_audit.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
+    p_tk_resolve = sub.add_parser("takeover-resolve", help="接管台账: 设置冲突/重复策略")
+    p_tk_resolve.add_argument("--source-path", default=None, help="冲突文件源路径")
+    p_tk_resolve.add_argument("--resolution", choices=["skip", "overwrite", "rename", "ask"], default=None,
+                              help="冲突处理策略")
+    p_tk_resolve.add_argument("--duplicate-policy", choices=["skip", "merge", "overwrite", "ask"], default=None,
+                              help="重复导出记录处理策略")
 
     return parser
 
@@ -325,6 +360,112 @@ def _cmd_wizard_audit_export(args: argparse.Namespace, source_root: str) -> int:
     return 0
 
 
+def _cmd_takeover_scan(args: argparse.Namespace, source_root: str) -> int:
+    config_path = getattr(args, "tk_config", None) or args.config
+    ledger = TakeoverLedger(
+        source_root=source_root,
+        target_root=args.target,
+        config_path=config_path,
+        conflict_policy=args.conflict_policy,
+        duplicate_policy=args.duplicate_policy,
+    )
+    result = ledger.scan()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("has_conflicts"):
+        print("\n[提示] 检测到目标路径同名文件冲突，可用 takeover-resolve 设置处理策略", file=sys.stderr)
+    if result.get("ledger", {}).get("items_with_duplicate_export", 0) > 0:
+        print("[提示] 检测到重复导出记录，可用 takeover-resolve --duplicate-policy 设置策略", file=sys.stderr)
+    return 0
+
+
+def _cmd_takeover_confirm(source_root: str) -> int:
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.confirm()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_takeover_apply(source_root: str) -> int:
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.apply()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "partial":
+        print("\n[提示] 接管部分失败，可修复问题后用 takeover-resume 续跑", file=sys.stderr)
+        return 6
+    return 0
+
+
+def _cmd_takeover_resume(source_root: str) -> int:
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.resume()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "partial":
+        return 6
+    return 0
+
+
+def _cmd_takeover_undo(source_root: str) -> int:
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.undo()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "undo_partial":
+        return 6
+    return 0
+
+
+def _cmd_takeover_status(source_root: str) -> int:
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.status()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_takeover_export(args: argparse.Namespace, source_root: str) -> int:
+    output = args.output or os.path.join(tempfile.gettempdir(), f"takeover_ledger.{args.fmt}")
+    output_abs = os.path.abspath(output)
+    if os.path.exists(output_abs) and not args.force:
+        print(f"[错误] 导出路径已被占用: {output_abs}", file=sys.stderr)
+        print("  处理方式:", file=sys.stderr)
+        print("    - 更换 --output 指定新路径", file=sys.stderr)
+        print("    - 或加 --force 强制覆盖", file=sys.stderr)
+        return 4
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.export_ledger(args.fmt, output_abs)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_takeover_audit(args: argparse.Namespace, source_root: str) -> int:
+    output = args.output or os.path.join(tempfile.gettempdir(), f"takeover_audit.{args.fmt}")
+    output_abs = os.path.abspath(output)
+    if os.path.exists(output_abs) and not args.force:
+        print(f"[错误] 导出路径已被占用: {output_abs}", file=sys.stderr)
+        return 4
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    result = ledger.export_audit(args.fmt, output_abs)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_takeover_resolve(args: argparse.Namespace, source_root: str) -> int:
+    ledger = TakeoverLedger(source_root=source_root, target_root=source_root)
+    results = []
+    if args.source_path and args.resolution:
+        result = ledger.set_conflict_resolution(args.source_path, args.resolution)
+        results.append(result)
+    if args.duplicate_policy:
+        result = ledger.set_duplicate_policy(args.duplicate_policy)
+        results.append(result)
+    if not results:
+        print("[错误] 请指定 --source-path + --resolution 或 --duplicate-policy", file=sys.stderr)
+        return 5
+    for r in results:
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+    return 0
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -346,6 +487,32 @@ def main():
         "wizard-undo", "wizard-status", "wizard-export",
         "wizard-resolve", "wizard-audit-export",
     }
+
+    _TAKEOVER_COMMANDS = {
+        "takeover-scan", "takeover-confirm", "takeover-apply",
+        "takeover-resume", "takeover-undo", "takeover-status",
+        "takeover-export", "takeover-audit", "takeover-resolve",
+    }
+
+    if args.command in _TAKEOVER_COMMANDS:
+        if args.command == "takeover-scan":
+            sys.exit(_cmd_takeover_scan(args, source_root))
+        elif args.command == "takeover-confirm":
+            sys.exit(_cmd_takeover_confirm(source_root))
+        elif args.command == "takeover-apply":
+            sys.exit(_cmd_takeover_apply(source_root))
+        elif args.command == "takeover-resume":
+            sys.exit(_cmd_takeover_resume(source_root))
+        elif args.command == "takeover-undo":
+            sys.exit(_cmd_takeover_undo(source_root))
+        elif args.command == "takeover-status":
+            sys.exit(_cmd_takeover_status(source_root))
+        elif args.command == "takeover-export":
+            sys.exit(_cmd_takeover_export(args, source_root))
+        elif args.command == "takeover-audit":
+            sys.exit(_cmd_takeover_audit(args, source_root))
+        elif args.command == "takeover-resolve":
+            sys.exit(_cmd_takeover_resolve(args, source_root))
 
     if args.command in _WIZARD_COMMANDS:
         if args.command == "wizard-scan":
