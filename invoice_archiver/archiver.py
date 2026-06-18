@@ -320,7 +320,22 @@ class Archiver:
         entries = self.failure_queue.load()
         return [e.__dict__ for e in entries]
 
+    def check_duplicate_batch_ids(self) -> List[str]:
+        ids = [b.batch_id for b in self.batch_mgr.list_batches()]
+        seen = set()
+        dupes = []
+        for bid in ids:
+            if bid in seen:
+                dupes.append(bid)
+            seen.add(bid)
+        return sorted(set(dupes))
+
     def export_logs(self, fmt: str, output_path: str) -> str:
+        out_abs = os.path.abspath(output_path)
+        if os.path.isdir(out_abs):
+            raise ValueError(
+                f"导出路径指向了目录而非文件: {out_abs}"
+            )
         if fmt == "csv":
-            return self.logger.export_csv(output_path)
-        return self.logger.export_json(output_path)
+            return self.logger.export_csv(out_abs)
+        return self.logger.export_json(out_abs)

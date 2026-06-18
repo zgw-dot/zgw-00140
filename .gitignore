@@ -32,16 +32,34 @@ Thumbs.db
 .idea/
 .vscode/
 
-# --- Invoice Archiver 运行产物 (禁止入库) ---
+# ============================================================
+# Invoice Archiver v2.0+ 运行产物  (禁止入库)
+# ------------------------------------------------------------
+# 新架构默认运行目录位于 %APPDATA%\InvoiceArchiver (Windows)
+# 或 ~/.local/share/InvoiceArchiver (Linux/macOS)，
+# 与源码仓库彻底分离。以下规则仅用于防止旧版本遗留产物被误提交。
+# ============================================================
+
+# 旧版本遗留的运行目录（迁移后会被自动清除空目录）
 temp_inbox/
 archive/
 state/
 logs/
+
+# 状态文件 / 日志 / 导出
 *.csv
 *.jsonl
+batches.json
+failure_queue.json
+
+# 配置标记文件（由迁移/初始化自动生成，不需要入库）
+.archive_version
+.migrated_from_v1
+
+# 允许入库的文件（白名单）
 !config.yaml
+!verify_full_flow.py
 
 # 本地测试脚本
-verify_clean.py
 test_*.py
 *.test.py
