@@ -9,6 +9,7 @@ from .archiver import Archiver
 from . import migration as mig
 from .relocation_wizard import RelocationWizard
 from .takeover_ledger import TakeoverLedger
+from .drill_center import DrillCenter
 
 
 _COMMANDS_THAT_ALLOW_LEGACY = {"init", "migrate", "detect-legacy"}
@@ -129,6 +130,46 @@ def _build_parser() -> argparse.ArgumentParser:
                               help="冲突处理策略")
     p_tk_resolve.add_argument("--duplicate-policy", choices=["skip", "merge", "overwrite", "ask"], default=None,
                               help="重复导出记录处理策略")
+
+    p_drill_scan = sub.add_parser("drill-scan", help="演练中心: 扫描旧产物，生成演练清单")
+    p_drill_scan.add_argument("--target", required=True, help="演练目标运行目录")
+    p_drill_scan.add_argument("--config", dest="drill_config", default=None, help="配置文件路径")
+    p_drill_scan.add_argument("--conflict-policy", choices=["skip", "overwrite", "rename"], default="rename",
+                              help="冲突处理策略 (默认: rename)")
+    p_drill_scan.add_argument("--duplicate-policy", choices=["skip", "merge", "overwrite", "ask"], default="merge",
+                              help="重复导出记录处理策略 (默认: merge)")
+    p_drill_scan.add_argument("--session-id", default=None, help="自定义会话 ID")
+
+    sub.add_parser("drill-plan", help="演练中心: 生成演练计划 (含批次摘要、回放计划、配置差异)")
+
+    p_drill_replay = sub.add_parser("drill-replay", help="演练中心: 按目标目录回放 list-batches / list-failures / export-logs")
+    p_drill_replay.add_argument("--target", default=None, help="回放目标目录 (覆盖已有)")
+
+    sub.add_parser("drill-report", help="演练中心: 生成演练报告 (batch_id、失败次数、来源去向、配置快照差异、重复导出标记)")
+
+    p_drill_save = sub.add_parser("drill-save", help="演练中心: 保存当前演练会话")
+    p_drill_save.add_argument("--label", default=None, help="会话标签 (默认使用 session_id)")
+
+    p_drill_load = sub.add_parser("drill-load", help="演练中心: 加载已保存的演练会话")
+    p_drill_load.add_argument("--label", required=True, help="要加载的会话标签")
+
+    sub.add_parser("drill-sessions", help="演练中心: 列出所有已保存的演练会话")
+
+    sub.add_parser("drill-undo", help="演练中心: 撤销演练 (回退演练状态)")
+
+    sub.add_parser("drill-status", help="演练中心: 查看演练状态")
+
+    p_drill_export = sub.add_parser("drill-export", help="演练中心: 导出演练证据包 (JSON/CSV)")
+    p_drill_export.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
+    p_drill_export.add_argument("--output", default=None, help="输出文件路径")
+    p_drill_export.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
+    p_drill_audit = sub.add_parser("drill-audit", help="演练中心: 导出演练审计日志 (JSON/CSV)")
+    p_drill_audit.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
+    p_drill_audit.add_argument("--output", default=None, help="输出文件路径")
+    p_drill_audit.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
+    p_drill_cleanup = sub.add_parser("drill-cleanup", help="演练中心: 清理源目录中的演练残留文件")
 
     return parser
 
@@ -466,6 +507,164 @@ def _cmd_takeover_resolve(args: argparse.Namespace, source_root: str) -> int:
     return 0
 
 
+def _cmd_drill_scan(args: argparse.Namespace, source_root: str) -> int:
+    config_path = getattr(args, "drill_config", None) or args.config
+    drill = DrillCenter(
+        source_root=source_root,
+        target_root=args.target,
+        config_path=config_path,
+        conflict_policy=args.conflict_policy,
+        duplicate_policy=args.duplicate_policy,
+        session_id=getattr(args, "session_id", None),
+    )
+    result = drill.scan()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("has_conflicts"):
+        print("\n[提示] 检测到目标路径同名文件冲突", file=sys.stderr)
+    if result.get("ledger", {}).get("items_with_duplicate_export", 0) > 0:
+        print("[提示] 检测到重复导出记录", file=sys.stderr)
+    return 0
+
+
+def _resolve_drill_target(source_root: str) -> str:
+    from .drill_center import _safe_read_json, DRILL_STATE_FILE, DRILL_POINTER_FILE
+    abs_root = os.path.abspath(source_root)
+    state_path = os.path.join(abs_root, ".drill_state.json")
+    data = _safe_read_json(state_path)
+    if data and data.get("target_root"):
+        return data["target_root"]
+    pointer_path = os.path.join(abs_root, DRILL_POINTER_FILE)
+    pdata = _safe_read_json(pointer_path)
+    if pdata and pdata.get("target_root"):
+        return pdata["target_root"]
+    for entry in os.listdir(abs_root):
+        candidate = os.path.join(abs_root, entry, ".drill", DRILL_STATE_FILE)
+        if os.path.isfile(candidate):
+            d = _safe_read_json(candidate)
+            if d and d.get("target_root"):
+                return d["target_root"]
+    return source_root
+
+
+def _cmd_drill_plan(source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.plan()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_replay(args: argparse.Namespace, source_root: str) -> int:
+    target = getattr(args, "target", None)
+    if not target:
+        target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.replay()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_report(source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.report()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_save(args: argparse.Namespace, source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.save_session(label=getattr(args, "label", None))
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_load(args: argparse.Namespace, source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.load_session(label=args.label)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_sessions(source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.list_sessions()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_drill_undo(source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.undo()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_status(source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.status()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_drill_export(args: argparse.Namespace, source_root: str) -> int:
+    output = args.output or os.path.join(tempfile.gettempdir(), f"drill_evidence.{args.fmt}")
+    output_abs = os.path.abspath(output)
+    if os.path.exists(output_abs) and not args.force:
+        print(f"[错误] 导出路径已被占用: {output_abs}", file=sys.stderr)
+        print("  处理方式:", file=sys.stderr)
+        print("    - 更换 --output 指定新路径", file=sys.stderr)
+        print("    - 或加 --force 强制覆盖", file=sys.stderr)
+        return 4
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.export_evidence(args.fmt, output_abs)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_audit(args: argparse.Namespace, source_root: str) -> int:
+    output = args.output or os.path.join(tempfile.gettempdir(), f"drill_audit.{args.fmt}")
+    output_abs = os.path.abspath(output)
+    if os.path.exists(output_abs) and not args.force:
+        print(f"[错误] 导出路径已被占用: {output_abs}", file=sys.stderr)
+        return 4
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.export_audit(args.fmt, output_abs)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_drill_cleanup(source_root: str) -> int:
+    target = _resolve_drill_target(source_root)
+    drill = DrillCenter(source_root=source_root, target_root=target)
+    result = drill.cleanup()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -494,6 +693,12 @@ def main():
         "takeover-export", "takeover-audit", "takeover-resolve",
     }
 
+    _DRILL_COMMANDS = {
+        "drill-scan", "drill-plan", "drill-replay", "drill-report",
+        "drill-save", "drill-load", "drill-sessions", "drill-undo",
+        "drill-status", "drill-export", "drill-audit", "drill-cleanup",
+    }
+
     if args.command in _TAKEOVER_COMMANDS:
         if args.command == "takeover-scan":
             sys.exit(_cmd_takeover_scan(args, source_root))
@@ -513,6 +718,32 @@ def main():
             sys.exit(_cmd_takeover_audit(args, source_root))
         elif args.command == "takeover-resolve":
             sys.exit(_cmd_takeover_resolve(args, source_root))
+
+    if args.command in _DRILL_COMMANDS:
+        if args.command == "drill-scan":
+            sys.exit(_cmd_drill_scan(args, source_root))
+        elif args.command == "drill-plan":
+            sys.exit(_cmd_drill_plan(source_root))
+        elif args.command == "drill-replay":
+            sys.exit(_cmd_drill_replay(args, source_root))
+        elif args.command == "drill-report":
+            sys.exit(_cmd_drill_report(source_root))
+        elif args.command == "drill-save":
+            sys.exit(_cmd_drill_save(args, source_root))
+        elif args.command == "drill-load":
+            sys.exit(_cmd_drill_load(args, source_root))
+        elif args.command == "drill-sessions":
+            sys.exit(_cmd_drill_sessions(source_root))
+        elif args.command == "drill-undo":
+            sys.exit(_cmd_drill_undo(source_root))
+        elif args.command == "drill-status":
+            sys.exit(_cmd_drill_status(source_root))
+        elif args.command == "drill-export":
+            sys.exit(_cmd_drill_export(args, source_root))
+        elif args.command == "drill-audit":
+            sys.exit(_cmd_drill_audit(args, source_root))
+        elif args.command == "drill-cleanup":
+            sys.exit(_cmd_drill_cleanup(source_root))
 
     if args.command in _WIZARD_COMMANDS:
         if args.command == "wizard-scan":
