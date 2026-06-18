@@ -1,0 +1,121 @@
+{
+  "current_pack_id": "PACK_20260618_160134_893833",
+  "current_action": "import",
+  "pack_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\pack.zip",
+  "target_runtime_root": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run",
+  "phase": "dry_run_completed",
+  "import_dry_run": true,
+  "import_items": [
+    {
+      "relative_path": "state/batches.json",
+      "target_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\state\\batches.json",
+      "target_kind": "state",
+      "batch_id": "BATCH_X",
+      "checksum": "3d041ced458d9be8e8a1c6db344235a74376603a2ce325a72a3c5a0dc2daa3bb",
+      "size": 61,
+      "status": "dry_run_ok",
+      "conflict": null,
+      "resolution": null,
+      "error": null
+    },
+    {
+      "relative_path": "state/failure_queue.json",
+      "target_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\state\\failure_queue.json",
+      "target_kind": "state",
+      "batch_id": null,
+      "checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "size": 2,
+      "status": "dry_run_ok",
+      "conflict": null,
+      "resolution": null,
+      "error": null
+    },
+    {
+      "relative_path": "logs/archive_log.jsonl",
+      "target_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\logs\\archive_log.jsonl",
+      "target_kind": "logs",
+      "batch_id": null,
+      "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0,
+      "status": "dry_run_ok",
+      "conflict": null,
+      "resolution": null,
+      "error": null
+    },
+    {
+      "relative_path": "archive/x.txt",
+      "target_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\archive\\x.txt",
+      "target_kind": "archive",
+      "batch_id": null,
+      "checksum": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+      "size": 1,
+      "status": "dry_run_ok",
+      "conflict": null,
+      "resolution": null,
+      "error": null
+    },
+    {
+      "relative_path": "config/config.yaml",
+      "target_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\config.yaml",
+      "target_kind": "config",
+      "batch_id": null,
+      "checksum": "3b4fda7f368806260440ab607f1ffd5cb63e8b5c226d08c2a51cc7487c014316",
+      "size": 529,
+      "status": "dry_run_ok",
+      "conflict": null,
+      "resolution": null,
+      "error": null
+    }
+  ],
+  "import_conflicts": [
+    {
+      "kind": "duplicate_batch_id",
+      "description": "目标目录已存在同名批次: BATCH_X",
+      "source_item": {
+        "batch_ids": [
+          "BATCH_X"
+        ]
+      },
+      "target_item": {
+        "batch_ids": [
+          "BATCH_X"
+        ]
+      },
+      "resolution": "pending",
+      "severity": "warning"
+    }
+  ],
+  "original_target_state": {
+    "existing_files": {
+      "archive\\x.txt": {
+        "exists": true,
+        "checksum": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+        "size": 1
+      },
+      "state\\batches.json": {
+        "exists": true,
+        "checksum": "3d041ced458d9be8e8a1c6db344235a74376603a2ce325a72a3c5a0dc2daa3bb",
+        "size": 61
+      },
+      "state\\failure_queue.json": {
+        "exists": true,
+        "checksum": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "size": 2
+      },
+      "logs\\archive_log.jsonl": {
+        "exists": true,
+        "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      }
+    },
+    "batches_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\state\\batches.json",
+    "fq_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\state\\failure_queue.json",
+    "log_path": "C:\\Users\\13623\\AppData\\Local\\Temp\\codex_review_zgw_00140_cli\\run\\logs\\archive_log.jsonl",
+    "snapshot_time": "2026-06-18T16:01:35.745276"
+  },
+  "completed_paths": [],
+  "created_at": "2026-06-18T16:01:35.733666",
+  "updated_at": "2026-06-18T16:01:35.747521",
+  "undo_available": false,
+  "version": "2.0"
+}
