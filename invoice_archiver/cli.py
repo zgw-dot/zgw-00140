@@ -10,6 +10,7 @@ from . import migration as mig
 from .relocation_wizard import RelocationWizard
 from .takeover_ledger import TakeoverLedger
 from .drill_center import DrillCenter
+from .handoff_sealer import HandoffSealer
 
 
 _COMMANDS_THAT_ALLOW_LEGACY = {"init", "migrate", "detect-legacy"}
@@ -170,6 +171,38 @@ def _build_parser() -> argparse.ArgumentParser:
     p_drill_audit.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
 
     p_drill_cleanup = sub.add_parser("drill-cleanup", help="演练中心: 清理源目录中的演练残留文件")
+
+    p_hs_pack = sub.add_parser("handoff-pack", help="交接封箱包: 打包当前运行目录配置、批次、失败队列、导出记录为可回放交接包")
+    p_hs_pack.add_argument("--output", default=None, help="输出包路径 (.zip)，默认到系统临时目录")
+    p_hs_pack.add_argument("--notes", default="", help="交接包备注说明")
+    p_hs_pack.add_argument("--no-samples", action="store_true", help="不打包 archive/temp_inbox 中的样例文件（仅元数据）")
+
+    p_hs_precheck_pack = sub.add_parser("handoff-precheck-pack", help="交接封箱包: 预检交接包完整性和校验摘要")
+    p_hs_precheck_pack.add_argument("--pack", required=True, help="交接包路径 (.zip)")
+
+    p_hs_precheck_import = sub.add_parser("handoff-precheck-import", help="交接封箱包: 预检导入冲突（目录已有数据、同名批次、重复导出、手改配置等）")
+    p_hs_precheck_import.add_argument("--pack", required=True, help="交接包路径 (.zip)")
+    p_hs_precheck_import.add_argument("--target", default=None, help="目标运行目录（默认当前目录）")
+    p_hs_precheck_import.add_argument("--dry-run", action="store_true", help="预检模式，不实际写入")
+
+    p_hs_import = sub.add_parser("handoff-import", help="交接封箱包: 导入交接包到目标运行目录")
+    p_hs_import.add_argument("--pack", required=True, help="交接包路径 (.zip)")
+    p_hs_import.add_argument("--target", default=None, help="目标运行目录（默认当前目录）")
+    p_hs_import.add_argument("--dry-run", action="store_true", help="演练模式，不实际写入文件")
+    p_hs_import.add_argument("--resume", action="store_true", help="续跑上次未完成的导入（重启后继续）")
+    p_hs_import.add_argument("--conflict-policy", choices=["skip", "overwrite", "rename"], default="skip",
+                             help="冲突处理策略: skip跳过(默认), overwrite覆盖, rename自动重命名")
+
+    sub.add_parser("handoff-confirm", help="交接封箱包: 确认导入落地，关闭撤销通道")
+
+    sub.add_parser("handoff-undo", help="交接封箱包: 撤销导入，恢复目标目录到导入前状态")
+
+    p_hs_history = sub.add_parser("handoff-history", help="交接封箱包: 查看打包/导入历史和审计日志")
+    p_hs_history.add_argument("--pack-id", default=None, help="按包ID过滤历史记录")
+    p_hs_history.add_argument("--limit", type=int, default=100, help="最多显示记录数（默认100）")
+
+    sub.add_parser("handoff-status", help="交接封箱包: 查看当前操作状态")
+    sub.add_parser("handoff-cleanup", help="交接封箱包: 清理sealer状态文件和审计日志")
 
     return parser
 
@@ -665,6 +698,112 @@ def _cmd_drill_cleanup(source_root: str) -> int:
     return 0
 
 
+def _cmd_handoff_pack(args: argparse.Namespace, source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.pack(
+        output_path=args.output,
+        notes=args.notes,
+        include_samples=not args.no_samples,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_handoff_precheck_pack(args: argparse.Namespace, source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.precheck_pack(pack_path=args.pack)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    if not result.get("is_valid", False):
+        print("\n[错误] 交接包存在问题，请检查 issues 列表", file=sys.stderr)
+        return 5
+    return 0
+
+
+def _cmd_handoff_precheck_import(args: argparse.Namespace, source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    target = args.target or source_root
+    result = sealer.precheck_import(
+        pack_path=args.pack,
+        target_runtime_root=target,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    if result.get("error_conflicts", 0) > 0:
+        print("\n[错误] 存在阻断性冲突（权限不足等），请先修复", file=sys.stderr)
+        return 6
+    if result.get("warning_conflicts", 0) > 0:
+        print("\n[提示] 存在冲突警告（同名文件、重复批次等），导入时可用 --conflict-policy 指定处理策略", file=sys.stderr)
+    return 0
+
+
+def _cmd_handoff_import(args: argparse.Namespace, source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    target = args.target or source_root
+    result = sealer.do_import(
+        pack_path=args.pack,
+        target_runtime_root=target,
+        dry_run=args.dry_run,
+        resume=args.resume,
+        conflict_policy=args.conflict_policy,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    if result.get("status") == "partial":
+        print("\n[提示] 导入部分失败，可修复问题后用 handoff-import --resume 续跑，或 handoff-undo 撤销", file=sys.stderr)
+        return 6
+    if result.get("status") == "imported":
+        print("\n[提示] 导入完成，执行 handoff-confirm 确认落地或 handoff-undo 撤销", file=sys.stderr)
+    return 0
+
+
+def _cmd_handoff_confirm(source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.confirm()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    return 0
+
+
+def _cmd_handoff_undo(source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.undo()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "error":
+        return 5
+    if result.get("status") == "undo_partial":
+        return 6
+    return 0
+
+
+def _cmd_handoff_history(args: argparse.Namespace, source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.list_history(pack_id=args.pack_id, limit=args.limit)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_handoff_status(source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.status()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_handoff_cleanup(source_root: str) -> int:
+    sealer = HandoffSealer(runtime_root=source_root)
+    result = sealer.cleanup()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -697,6 +836,12 @@ def main():
         "drill-scan", "drill-plan", "drill-replay", "drill-report",
         "drill-save", "drill-load", "drill-sessions", "drill-undo",
         "drill-status", "drill-export", "drill-audit", "drill-cleanup",
+    }
+
+    _HANDOFF_COMMANDS = {
+        "handoff-pack", "handoff-precheck-pack", "handoff-precheck-import",
+        "handoff-import", "handoff-confirm", "handoff-undo",
+        "handoff-history", "handoff-status", "handoff-cleanup",
     }
 
     if args.command in _TAKEOVER_COMMANDS:
@@ -744,6 +889,26 @@ def main():
             sys.exit(_cmd_drill_audit(args, source_root))
         elif args.command == "drill-cleanup":
             sys.exit(_cmd_drill_cleanup(source_root))
+
+    if args.command in _HANDOFF_COMMANDS:
+        if args.command == "handoff-pack":
+            sys.exit(_cmd_handoff_pack(args, source_root))
+        elif args.command == "handoff-precheck-pack":
+            sys.exit(_cmd_handoff_precheck_pack(args, source_root))
+        elif args.command == "handoff-precheck-import":
+            sys.exit(_cmd_handoff_precheck_import(args, source_root))
+        elif args.command == "handoff-import":
+            sys.exit(_cmd_handoff_import(args, source_root))
+        elif args.command == "handoff-confirm":
+            sys.exit(_cmd_handoff_confirm(source_root))
+        elif args.command == "handoff-undo":
+            sys.exit(_cmd_handoff_undo(source_root))
+        elif args.command == "handoff-history":
+            sys.exit(_cmd_handoff_history(args, source_root))
+        elif args.command == "handoff-status":
+            sys.exit(_cmd_handoff_status(source_root))
+        elif args.command == "handoff-cleanup":
+            sys.exit(_cmd_handoff_cleanup(source_root))
 
     if args.command in _WIZARD_COMMANDS:
         if args.command == "wizard-scan":
