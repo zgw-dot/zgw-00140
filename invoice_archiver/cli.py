@@ -7,6 +7,7 @@ import tempfile
 from .config import load_config, init_sample_config, ArchiveConfig
 from .archiver import Archiver
 from . import migration as mig
+from .relocation_wizard import RelocationWizard
 
 
 _COMMANDS_THAT_ALLOW_LEGACY = {"init", "migrate", "detect-legacy"}
@@ -66,6 +67,34 @@ def _build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="如输出文件已存在，强制覆盖",
     )
 
+    p_wiz_scan = sub.add_parser("wizard-scan", help="搬家向导: 扫描源码目录运行产物")
+    p_wiz_scan.add_argument("--target", default=None, help="搬家目标根目录 (默认: 用户数据目录)")
+    p_wiz_scan.add_argument("--rules", default=None, help="规则文件路径 (JSON, 含 path_mapping/ignore_patterns)")
+    p_wiz_scan.add_argument("--ignore", nargs="*", default=[], help="忽略的文件名模式 (子串匹配)")
+
+    sub.add_parser("wizard-plan", help="搬家向导: 生成搬家计划")
+
+    p_wiz_apply = sub.add_parser("wizard-apply", help="搬家向导: 执行搬家")
+    p_wiz_apply.add_argument("--resume", action="store_true", help="续跑上次未完成的搬家")
+
+    sub.add_parser("wizard-undo", help="搬家向导: 撤销上次搬家")
+    sub.add_parser("wizard-status", help="搬家向导: 查看搬家状态")
+
+    p_wiz_export = sub.add_parser("wizard-export", help="搬家向导: 导出搬家结果 (JSON/CSV)")
+    p_wiz_export.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
+    p_wiz_export.add_argument("--output", default=None, help="输出文件路径")
+    p_wiz_export.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
+    p_wiz_conflict = sub.add_parser("wizard-resolve", help="搬家向导: 设置冲突处理策略")
+    p_wiz_conflict.add_argument("--source-path", required=True, help="冲突文件源路径")
+    p_wiz_conflict.add_argument("--resolution", required=True, choices=["skip", "overwrite", "rename", "ask"],
+                                help="冲突处理策略")
+
+    p_wiz_audit = sub.add_parser("wizard-audit-export", help="搬家向导: 导出审计日志 (JSON/CSV)")
+    p_wiz_audit.add_argument("--format", choices=["csv", "json"], default="json", dest="fmt")
+    p_wiz_audit.add_argument("--output", default=None, help="输出文件路径")
+    p_wiz_audit.add_argument("--force", action="store_true", help="如输出文件已存在，强制覆盖")
+
     return parser
 
 
@@ -109,15 +138,14 @@ def _cmd_migrate(
         }, indent=2, ensure_ascii=False))
         return 0
 
-    print(json.dumps({
-        "status": "plan_ready",
-        "apply": args.apply,
-        "items_count": len(plan.items_to_move),
-        "items": plan.items_to_move,
-    }, indent=2, ensure_ascii=False))
-
     if not args.apply:
-        print("\n[提示] 以上为迁移预览。确认无误后，加 --apply 执行实际迁移。")
+        print(json.dumps({
+            "status": "plan_ready",
+            "apply": False,
+            "items_count": len(plan.items_to_move),
+            "items": plan.items_to_move,
+        }, indent=2, ensure_ascii=False))
+        print("\n[提示] 以上为迁移预览。确认无误后，加 --apply 执行实际迁移。", file=sys.stderr)
         return 0
 
     result = mig.apply_migration(plan)
@@ -203,6 +231,100 @@ def _check_export_output(output: str, force: bool) -> int:
     return 0
 
 
+def _cmd_wizard_scan(args: argparse.Namespace, source_root: str) -> int:
+    target = args.target
+    if not target:
+        if os.path.exists(args.config):
+            cfg = load_config(args.config)
+            from .config import _app_data_dir
+            target = _app_data_dir()
+        else:
+            from .config import _app_data_dir
+            target = _app_data_dir()
+
+    wizard = RelocationWizard(
+        source_root=source_root,
+        target_root=target,
+        rules_file=args.rules,
+        ignore_patterns=args.ignore,
+    )
+    result = wizard.scan()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("has_conflicts"):
+        print("\n[提示] 检测到目标路径同名文件冲突，可用 wizard-resolve 设置处理策略，再执行 wizard-apply", file=sys.stderr)
+    return 0
+
+
+def _cmd_wizard_plan(args: argparse.Namespace, source_root: str) -> int:
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    result = wizard.plan()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_wizard_apply(args: argparse.Namespace, source_root: str) -> int:
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    if args.resume:
+        result = wizard.resume()
+    else:
+        result = wizard.apply()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "partial":
+        print("\n[提示] 搬家部分失败，可修复问题后用 wizard-apply --resume 续跑", file=sys.stderr)
+        return 6
+    return 0
+
+
+def _cmd_wizard_undo(args: argparse.Namespace, source_root: str) -> int:
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    result = wizard.undo()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "undo_partial":
+        return 6
+    return 0
+
+
+def _cmd_wizard_status(args: argparse.Namespace, source_root: str) -> int:
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    result = wizard.status()
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_wizard_export(args: argparse.Namespace, source_root: str) -> int:
+    output = args.output or os.path.join(tempfile.gettempdir(), f"wizard_result.{args.fmt}")
+    output_abs = os.path.abspath(output)
+    if os.path.exists(output_abs) and not args.force:
+        print(f"[错误] 导出路径已被占用: {output_abs}", file=sys.stderr)
+        print("  处理方式:", file=sys.stderr)
+        print("    - 更换 --output 指定新路径", file=sys.stderr)
+        print("    - 或加 --force 强制覆盖", file=sys.stderr)
+        return 4
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    result = wizard.export_result(args.fmt, output_abs)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_wizard_resolve(args: argparse.Namespace, source_root: str) -> int:
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    result = wizard.set_conflict_resolution(args.source_path, args.resolution)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_wizard_audit_export(args: argparse.Namespace, source_root: str) -> int:
+    output = args.output or os.path.join(tempfile.gettempdir(), f"wizard_audit.{args.fmt}")
+    output_abs = os.path.abspath(output)
+    if os.path.exists(output_abs) and not args.force:
+        print(f"[错误] 导出路径已被占用: {output_abs}", file=sys.stderr)
+        return 4
+    wizard = RelocationWizard(source_root=source_root, target_root=source_root)
+    result = wizard.export_audit(args.fmt, output_abs)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def main():
     parser = _build_parser()
     args = parser.parse_args()
@@ -218,6 +340,30 @@ def main():
 
     if args.command == "detect-legacy":
         sys.exit(_cmd_detect_legacy(source_root))
+
+    _WIZARD_COMMANDS = {
+        "wizard-scan", "wizard-plan", "wizard-apply",
+        "wizard-undo", "wizard-status", "wizard-export",
+        "wizard-resolve", "wizard-audit-export",
+    }
+
+    if args.command in _WIZARD_COMMANDS:
+        if args.command == "wizard-scan":
+            sys.exit(_cmd_wizard_scan(args, source_root))
+        elif args.command == "wizard-plan":
+            sys.exit(_cmd_wizard_plan(args, source_root))
+        elif args.command == "wizard-apply":
+            sys.exit(_cmd_wizard_apply(args, source_root))
+        elif args.command == "wizard-undo":
+            sys.exit(_cmd_wizard_undo(args, source_root))
+        elif args.command == "wizard-status":
+            sys.exit(_cmd_wizard_status(args, source_root))
+        elif args.command == "wizard-export":
+            sys.exit(_cmd_wizard_export(args, source_root))
+        elif args.command == "wizard-resolve":
+            sys.exit(_cmd_wizard_resolve(args, source_root))
+        elif args.command == "wizard-audit-export":
+            sys.exit(_cmd_wizard_audit_export(args, source_root))
 
     try:
         config = load_config(args.config)

@@ -276,14 +276,26 @@ def _migrate_dir_tree(src: str, dst: str) -> Tuple[int, List[str]]:
 def _cleanup_empty_legacy_dirs(source_root: str, detection: LegacyDetection) -> None:
     for name in LEGACY_DIR_NAMES:
         p = os.path.join(source_root, name)
-        if os.path.isdir(p) and not _has_contents(p):
+        if os.path.isdir(p):
+            _remove_empty_tree(p)
+
+
+def _remove_empty_tree(path: str) -> None:
+    for root, dirs, files in os.walk(path, topdown=False):
+        for d in dirs:
+            dp = os.path.join(root, d)
             try:
-                shutil.rmtree(p)
+                os.rmdir(dp)
             except OSError:
-                try:
-                    os.rmdir(p)
-                except OSError:
-                    pass
+                pass
+    try:
+        if not _has_contents(path):
+            shutil.rmtree(path)
+    except OSError:
+        try:
+            os.rmdir(path)
+        except OSError:
+            pass
 
 
 def _write_marker(source_root: str, result: MigrationResult) -> None:

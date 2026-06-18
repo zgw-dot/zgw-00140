@@ -31,7 +31,7 @@ from datetime import datetime, timedelta
 
 HERE = Path(__file__).resolve().parent
 PY = sys.executable or "python"
-MAIN = str(HERE / "main.py")
+MAIN = ""
 
 
 def _banner(title: str) -> None:
@@ -78,13 +78,14 @@ def _load_json(path):
 
 
 def step1_build_sandbox(sandbox: Path):
+    global MAIN
     _banner("Step 1: 构建沙盒，伪造旧版本 (v1.x) 运行产物")
 
-    # 复制核心模块
     pkg_src = HERE / "invoice_archiver"
     pkg_dst = sandbox / "invoice_archiver"
     shutil.copytree(pkg_src, pkg_dst)
     shutil.copy(HERE / "main.py", sandbox / "main.py")
+    MAIN = str(sandbox / "main.py")
 
     # 伪造旧版本收件箱样例
     temp_inbox = sandbox / "temp_inbox"
@@ -241,9 +242,10 @@ def step3_migrate(sandbox: Path, expected_old_batch: str):
     # 验证 failure_queue 保留了 retry_count 和 batch_id
     fq = _load_json(Path(cfg.state_dir) / "failure_queue.json")
     assert len(fq) >= 1
-    f0 = fq[0]
+    matching = [f for f in fq if f.get("batch_id") == expected_old_batch]
+    assert matching, f"旧 batch_id={expected_old_batch} 的失败记录未找到: {fq}"
+    f0 = matching[0]
     assert f0["retry_count"] == 3, f"retry_count 丢失: {f0}"
-    assert f0["batch_id"] == expected_old_batch, f"关联 batch_id 丢失: {f0}"
     print(f"  [OK] 迁移后失败队列保留 retry_count={f0['retry_count']}, batch_id={f0['batch_id']}")
 
     # 验证 temp_inbox 样例文件已移动
