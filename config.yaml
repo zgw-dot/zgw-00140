@@ -1,20 +1,21 @@
-source_dir: "./temp_inbox"
-archive_dir: "./archive"
-state_dir: "./state"
-log_dir: "./logs"
+# 采购发票附件归档工具配置
+# 运行时产物默认保存在 %APPDATA%\InvoiceArchiver (Windows) 或 ~/.local/share/InvoiceArchiver
+# source_dir: 请配置你的临时收件箱目录，存放待归档的发票、验收单、合同附件
+# 源文件文件名格式: 供应商编码_类型_说明.扩展名 例: SUP001_invoice_202606.pdf
 
-supplier_pattern: "^([A-Z]{2,5}\\d{3,6})[_-]"
+archive_dir: '%APPDATA%\InvoiceArchiver\archive'
 batch_size: 50
-
-enabled_extensions:
-  - .pdf
-  - .jpg
-  - .jpeg
-  - .png
-  - .xlsx
-  - .docx
-  - .ofd
-
+conflict_policy: rename
 disabled_extensions: []
-
-conflict_policy: "rename"
+enabled_extensions:
+- .pdf
+- .jpg
+- .jpeg
+- .png
+- .xlsx
+- .docx
+- .ofd
+log_dir: '%APPDATA%\InvoiceArchiver\logs'
+source_dir: '%APPDATA%\InvoiceArchiver\temp_inbox'
+state_dir: '%APPDATA%\InvoiceArchiver\state'
+supplier_pattern: ^([A-Z]{2,5}\d{3,6})[_-]

@@ -2,9 +2,14 @@ import argparse
 import json
 import sys
 import os
+import tempfile
 
 from .config import load_config, init_sample_config, ArchiveConfig
 from .archiver import Archiver
+
+
+def _default_export_path(fmt: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"archive_logs.{fmt}")
 
 
 def main():
@@ -35,7 +40,7 @@ def main():
         "--format", choices=["csv", "json"], default="csv", dest="fmt",
         help="导出格式",
     )
-    p_export.add_argument("--output", default="archive_logs.csv", help="输出文件路径")
+    p_export.add_argument("--output", default=None, help="输出文件路径，默认到系统临时目录")
 
     args = parser.parse_args()
 
@@ -45,14 +50,19 @@ def main():
 
     if args.command == "init":
         cfg_path = init_sample_config(args.config)
-        cfg = ArchiveConfig()
-        os.makedirs(cfg.source_dir, exist_ok=True)
+        cfg = load_config(cfg_path)
+        os.makedirs(cfg.state_dir, exist_ok=True)
+        os.makedirs(cfg.log_dir, exist_ok=True)
         os.makedirs(cfg.archive_dir, exist_ok=True)
+        os.makedirs(cfg.source_dir, exist_ok=True)
         print(json.dumps({
             "status": "initialized",
             "config": cfg_path,
             "source_dir": os.path.abspath(cfg.source_dir),
             "archive_dir": os.path.abspath(cfg.archive_dir),
+            "state_dir": os.path.abspath(cfg.state_dir),
+            "log_dir": os.path.abspath(cfg.log_dir),
+            "notice": "运行时产物已默认放到系统用户目录，不会污染源码仓库",
         }, indent=2, ensure_ascii=False))
         return
 
@@ -97,7 +107,8 @@ def main():
         print(json.dumps(result, indent=2, ensure_ascii=False))
 
     elif args.command == "export-logs":
-        output = archiver.export_logs(args.fmt, args.output)
+        output = args.output or _default_export_path(args.fmt)
+        output = archiver.export_logs(args.fmt, output)
         print(f"日志已导出: {os.path.abspath(output)}")
 
 

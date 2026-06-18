@@ -31,3 +31,17 @@ temp/
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Invoice Archiver 运行产物 (禁止入库) ---
+temp_inbox/
+archive/
+state/
+logs/
+*.csv
+*.jsonl
+!config.yaml
+
+# 本地测试脚本
+verify_clean.py
+test_*.py
+*.test.py
